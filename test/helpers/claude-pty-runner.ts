@@ -519,12 +519,18 @@ export function isProseAUQVisible(visible: string): boolean {
   }
   if (letteredHits.size >= 2) return true;
 
-  // Pattern 2: 3+ distinct numbered options at line starts, AND no
+  // Pattern 2: 2+ distinct numbered options at line starts, AND no
   // `❯<spaces>1.` cursor IN THE RECENT TAIL (not the full buffer — a
   // trust-dialog `❯ 1. Yes` at boot is in scrollback forever and
   // would otherwise suppress this path for the rest of the run).
   // The native-UI deferral only applies when the cursor list is
   // currently rendered, not historically.
+  //
+  // Threshold 2 (matching the lettered branch): the tail is a 4KB window,
+  // and by the time the polling loop sees it, the model may have emitted
+  // option 1 several KB earlier and only 2/3/4 remain in tail. False
+  // positives on prose ("First, x. Second, y.") are extremely rare given
+  // the line-start anchor + the no-cursor gate.
   if (/❯\s*1\./.test(tail)) return false;
   const numberedRe = /(?:^|\n)[ \t❯]*([1-9])\./g;
   const numberedHits = new Set<string>();
@@ -532,7 +538,7 @@ export function isProseAUQVisible(visible: string): boolean {
   while ((nm = numberedRe.exec(tail)) !== null) {
     if (nm[1]) numberedHits.add(nm[1]);
   }
-  return numberedHits.size >= 3;
+  return numberedHits.size >= 2;
 }
 
 /**

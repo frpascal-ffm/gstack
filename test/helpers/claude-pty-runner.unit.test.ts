@@ -254,10 +254,17 @@ A) Only one option mentioned in passing.
     expect(isProseAUQVisible(sample)).toBe(false);
   });
 
-  test('returns false on 2 numbered options (need 3+ for prose numbered)', () => {
+  test('matches 2 numbered options (threshold matches lettered branch — tails miss option 1)', () => {
     const sample = `
 1. First note.
 2. Second note.
+`;
+    expect(isProseAUQVisible(sample)).toBe(true);
+  });
+
+  test('returns false on a single numbered option', () => {
+    const sample = `
+1. Only one option mentioned.
 `;
     expect(isProseAUQVisible(sample)).toBe(false);
   });
