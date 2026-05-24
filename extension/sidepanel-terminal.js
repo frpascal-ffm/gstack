@@ -58,6 +58,14 @@
    */
   let autoConnectAborted = false;
   /**
+   * v1.44 session identity. The stable, non-secret sessionId minted by
+   * /pty-session and surfaced back via window.gstackPtySession so the
+   * sidepanel.js pagehide handler can sendBeacon /pty-dispose for THIS
+   * specific session. forceRestart sends this to /pty-restart so the
+   * server can scope the disposal to one terminal rather than all.
+   */
+  let currentSessionId = null;
+  /**
    * 25s client-side WS keepalive interval (v1.44+). Belt-and-suspenders with
    * the server-side ping in terminal-agent.ts: server pings cover most
    * idle-NAT cases, client keepalive frames also defend against Chromium's
@@ -347,11 +355,19 @@
       setState(STATE.IDLE, { message: `Cannot start: ${minted.error}` });
       return;
     }
-    const { terminalPort, ptySessionToken } = minted;
-    if (!ptySessionToken) {
-      setState(STATE.IDLE, { message: 'Cannot start: no session token returned' });
+    // v1.44 4-tuple: { terminalPort, sessionId, attachToken, leaseExpiresAt }
+    // Falls back to the legacy `ptySessionToken` field for one minor release
+    // (server keeps the alias) so a partially-updated extension still works
+    // against a fresh server.
+    const { terminalPort, sessionId } = minted;
+    const attachToken = minted.attachToken || minted.ptySessionToken;
+    if (!attachToken) {
+      setState(STATE.IDLE, { message: 'Cannot start: no attach token returned' });
       return;
     }
+    currentSessionId = sessionId || null;
+    // Expose for sidepanel.js pagehide handler — see Commit 2C wiring.
+    try { window.gstackPtySession = currentSessionId; } catch {}
 
     // Pre-flight: does claude even exist on PATH?
     const claudeStatus = await checkClaudeAvailable(terminalPort);
@@ -373,7 +389,7 @@
     // SameSite=Strict don't survive the jump from server.ts:34567 to the
     // agent's random port from a chrome-extension origin, so cookies
     // alone weren't reliable.
-    ws = new WebSocket(`ws://127.0.0.1:${terminalPort}/ws`, [`gstack-pty.${ptySessionToken}`]);
+    ws = new WebSocket(`ws://127.0.0.1:${terminalPort}/ws`, [`gstack-pty.${attachToken}`]);
     ws.binaryType = 'arraybuffer';
 
     ws.addEventListener('open', () => {
@@ -398,8 +414,11 @@
           }
         });
       } catch {}
-      // Send a single byte to nudge the agent to spawn claude (lazy-spawn trigger).
-      try { ws.send(new TextEncoder().encode('\n')); } catch {}
+      // v1.44 eager spawn: send {type:"start"} so the agent boots claude
+      // without requiring the user to type a keystroke. Pre-v1.44 the
+      // lazy-binary-spawn pattern made forceRestart look stuck for ~2-3s
+      // until the user pressed any key.
+      try { ws.send(JSON.stringify({ type: 'start' })); } catch {}
       // v1.44 client-side keepalive. Server pings every 25s; we ALSO send
       // keepalive frames at the same cadence so a paused timer on either
       // side still has the other to lean on. Both are silently dropped
@@ -471,23 +490,175 @@
    * Force a fresh session: close any open WS, dispose xterm, return to
    * IDLE, kick off auto-connect. Safe to call from any state.
    */
-  function forceRestart() {
+  /**
+   * v1.44 forceRestart: hits the server's /pty-restart one-transaction
+   * endpoint with the current sessionId. The server kills the old PtySession
+   * scope-to-our-id, mints a fresh sessionId + lease + attachToken, and
+   * returns the new 4-tuple in one round trip. Zero race window between
+   * kill and mint (codex D8).
+   *
+   * If we don't have a sessionId (sidebar is in IDLE / ENDED state because
+   * the prior session ended cleanly), the route accepts that gracefully —
+   * skips the dispose step and just mints fresh. Either way the user sees
+   * the same "Restarting..." → fresh prompt UX.
+   */
+  async function forceRestart() {
     if (keepaliveInterval) {
       clearInterval(keepaliveInterval);
       keepaliveInterval = null;
     }
-    try { ws && ws.close(); } catch {}
+    // Re-arm the auto-connect loop in case a prior auth failure stuck the
+    // sticky flag — explicit user action is the cleared-flag signal.
+    autoConnectAborted = false;
+    setState(STATE.IDLE, { message: 'Restarting Claude Code...' });
+
+    const serverPort = getServerPort();
+    const authToken = getAuthToken();
+    const priorSessionId = currentSessionId;
+
+    // Close the local WS BEFORE the server-side kill so the agent's
+    // close handler doesn't race with the dispose call.
+    try { ws && ws.close(4001, 'intentional-restart'); } catch {}
     ws = null;
     if (term) {
       try { term.dispose(); } catch {}
       term = null;
       fitAddon = null;
     }
-    // User explicitly asked for a fresh start; re-arm the auto-connect
-    // polling loop in case a prior auth failure stuck the abort flag.
-    autoConnectAborted = false;
-    setState(STATE.IDLE, { message: 'Starting Claude Code...' });
-    tryAutoConnect();
+
+    if (!serverPort || !authToken) {
+      // Server hasn't been discovered yet — fall back to the patient
+      // polling loop. forceRestart's promise of "fresh prompt now" can't
+      // be met without a live server; user sees the patient status path.
+      tryAutoConnect();
+      return;
+    }
+
+    let nextTuple = null;
+    try {
+      const resp = await fetch(`http://127.0.0.1:${serverPort}/pty-restart`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+        },
+        body: JSON.stringify(priorSessionId ? { sessionId: priorSessionId } : {}),
+        credentials: 'include',
+      });
+      if (resp.ok) {
+        nextTuple = await resp.json();
+      } else if (resp.status === 401) {
+        autoConnectAborted = true;
+        setState(STATE.IDLE, {
+          message: 'Auth invalid — reload the sidebar or restart your gstack session.',
+        });
+        return;
+      } else if (resp.status === 503) {
+        // Agent down — fall through to patient autoconnect which will
+        // surface the appropriate "waiting for server" status.
+        setState(STATE.IDLE, { message: 'Restart failed: terminal agent not ready. Retrying...' });
+      } else {
+        const body = await resp.text().catch(() => '');
+        setState(STATE.IDLE, { message: `Restart failed: ${resp.status} ${body || resp.statusText}` });
+      }
+    } catch (err) {
+      setState(STATE.IDLE, {
+        message: `Restart failed: ${err && err.message ? err.message : String(err)}`,
+      });
+    }
+
+    if (!nextTuple) {
+      // Restart didn't yield a fresh tuple. Fall back to the regular
+      // connect path; tryAutoConnect will retry as the server recovers.
+      currentSessionId = null;
+      try { window.gstackPtySession = null; } catch {}
+      tryAutoConnect();
+      return;
+    }
+
+    // We have a fresh 4-tuple — open the new WS directly without going
+    // through mintSession again. This is the explicit "no race window"
+    // path the codex D8 redesign was after.
+    const { terminalPort, sessionId, attachToken, expiresAt: _expiresAt } = nextTuple;
+    const token = attachToken || nextTuple.ptySessionToken;
+    if (!terminalPort || !token) {
+      currentSessionId = null;
+      tryAutoConnect();
+      return;
+    }
+    currentSessionId = sessionId || null;
+    try { window.gstackPtySession = currentSessionId; } catch {}
+
+    // Pre-flight: claude still on PATH?
+    const claudeStatus = await checkClaudeAvailable(terminalPort);
+    if (!claudeStatus.available) {
+      setState(STATE.NO_CLAUDE);
+      return;
+    }
+
+    setState(STATE.LIVE);
+    ensureXterm();
+    ws = new WebSocket(`ws://127.0.0.1:${terminalPort}/ws`, [`gstack-pty.${token}`]);
+    ws.binaryType = 'arraybuffer';
+
+    ws.addEventListener('open', () => {
+      try {
+        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      } catch {}
+      try {
+        chrome.runtime.sendMessage({ type: 'getTabState' }, (resp) => {
+          if (resp && ws && ws.readyState === WebSocket.OPEN) {
+            try {
+              ws.send(JSON.stringify({
+                type: 'tabState',
+                active: resp.active,
+                tabs: resp.tabs,
+                reason: 'restart',
+              }));
+            } catch {}
+          }
+        });
+      } catch {}
+      // Eager spawn — fresh claude prompt visible without user keystroke.
+      try { ws.send(JSON.stringify({ type: 'start' })); } catch {}
+      if (keepaliveInterval) clearInterval(keepaliveInterval);
+      keepaliveInterval = setInterval(() => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        try { ws.send(JSON.stringify({ type: 'keepalive' })); } catch {}
+      }, KEEPALIVE_INTERVAL_MS);
+    });
+
+    ws.addEventListener('message', (ev) => {
+      if (typeof ev.data === 'string') {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'error' && msg.code === 'CLAUDE_NOT_FOUND') {
+            setState(STATE.NO_CLAUDE);
+            try { ws.close(); } catch {}
+            return;
+          }
+          if (msg.type === 'ping') {
+            try { ws.send(JSON.stringify({ type: 'pong', ts: msg.ts })); } catch {}
+            return;
+          }
+        } catch {}
+        return;
+      }
+      const buf = ev.data instanceof ArrayBuffer ? new Uint8Array(ev.data) : ev.data;
+      term.write(buf);
+    });
+
+    ws.addEventListener('close', () => {
+      ws = null;
+      if (keepaliveInterval) {
+        clearInterval(keepaliveInterval);
+        keepaliveInterval = null;
+      }
+      if (state !== STATE.NO_CLAUDE) setState(STATE.ENDED);
+    });
+    ws.addEventListener('error', (err) => {
+      console.error('[gstack terminal] ws error', err);
+    });
   }
 
   /**
