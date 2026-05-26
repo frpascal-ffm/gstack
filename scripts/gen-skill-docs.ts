@@ -736,7 +736,16 @@ for (const currentHost of hostsToRun) {
 
       const { outputPath, content, symlinkLoop, catalogParts } = processTemplate(tmplPath, currentHost);
       if (catalogParts) {
-        const key = dir === '' ? 'gstack' : dir;
+        // Root-skill detection: when the template lives at ROOT/SKILL.md.tmpl,
+        // path.basename(path.dirname(tmplPath)) returns the repo's directory
+        // name (e.g. "seville-v3" in a Conductor worktree, "gstack" on CI).
+        // That's non-deterministic across machines and breaks CI freshness
+        // checks. Use the frontmatter `name` field as the registry key — the
+        // root SKILL.md.tmpl declares `name: gstack` explicitly. For all other
+        // skills, `dir` matches the directory name which matches the
+        // frontmatter name by convention.
+        const isRoot = path.dirname(tmplPath) === ROOT;
+        const key = isRoot ? 'gstack' : dir;
         proactiveAggregate[key] = {
           lead: catalogParts.lead,
           routing: catalogParts.routingProse,
@@ -855,11 +864,19 @@ The orchestrator will persist the plan link to its own memory/knowledge store.
     // is ever needed for debugging, write it to a separate `.gen-stamp` file.
     if (currentHost === 'claude' && CATALOG_MODE === 'trim' && Object.keys(proactiveAggregate).length > 0 && !DRY_RUN) {
       const proactivePath = path.join(ROOT, 'scripts', 'proactive-suggestions.json');
+      // Sort keys alphabetically so the serialized JSON is identical across
+      // machines regardless of filesystem-iteration order. Without this, CI
+      // freshness checks fail when the local dev machine and CI runner
+      // discover templates in different orders.
+      const sortedSkills: typeof proactiveAggregate = {};
+      for (const key of Object.keys(proactiveAggregate).sort()) {
+        sortedSkills[key] = proactiveAggregate[key];
+      }
       const payload = {
         $schema: 'https://gstack.dev/schemas/proactive-suggestions.json',
         catalog_mode: 'trim',
         note: 'Routing / voice-trigger prose extracted from SKILL.md frontmatter descriptions during catalog trim. Loaded on demand when routing guidance is needed.',
-        skills: proactiveAggregate,
+        skills: sortedSkills,
       };
       const serialized = JSON.stringify(payload, null, 2) + '\n';
       // Only write if content actually changed — prevents needless touches that
