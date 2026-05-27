@@ -1,15 +1,18 @@
 ---
-name: issue
+name: spec
 version: 0.1.0
 description: |
-  Turn an ambiguous request into a GitHub issue precise enough that an unfamiliar
-  engineer (or AI agent) can execute it without a follow-up question. Interrogates
-  the user in strict phases — why, scope, technical, draft, final — and refuses
-  to produce an issue until ambiguity is gone. Use after /office-hours has settled
-  the shape of an idea, or any time the user describes work that's not yet
-  backlog-ready.
-  Use when asked to "file an issue", "write up a ticket", "make this a GitHub
-  issue", "spec this out", or "turn this into a backlog item". (gstack)
+  Turn vague intent into a precise, executable spec in five phases. Pipe the spec
+  into a spawned Claude Code agent with `--execute`, dedupe against existing issues
+  with `--dedupe`, or hand off to GitHub. Every spec passes a codex quality gate
+  before file. Interrogates the user in strict phases — why, scope, technical,
+  draft, final — and refuses to produce an issue until ambiguity is gone. Use
+  after /office-hours has settled the shape of an idea, or any time the user
+  describes work that's not yet backlog-ready.
+  Use when asked to "spec this out", "file an issue", "write up a ticket", "make
+  this a GitHub issue", or "turn this into a backlog item". e.g., type `/spec` on
+  a vague bug → 5-phase interrogation → filed issue → spawned agent in ~4 minutes.
+  (gstack)
 allowed-tools:
   - Bash
   - Read
@@ -17,11 +20,12 @@ allowed-tools:
   - Glob
   - AskUserQuestion
 triggers:
+  - spec this out
   - file an issue
   - write up a ticket
   - turn this into an issue
-  - spec this out
   - make this a github issue
+  - turn this into a backlog item
 ---
 <!-- AUTO-GENERATED from SKILL.md.tmpl — do not edit directly -->
 <!-- Regenerate: bun run gen:skill-docs -->
@@ -61,7 +65,7 @@ _QUESTION_TUNING=$(~/.claude/skills/gstack/bin/gstack-config get question_tuning
 echo "QUESTION_TUNING: $_QUESTION_TUNING"
 mkdir -p ~/.gstack/analytics
 if [ "$_TEL" != "off" ]; then
-echo '{"skill":"issue","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","repo":"'$(basename "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || echo "unknown")'"}'  >> ~/.gstack/analytics/skill-usage.jsonl 2>/dev/null || true
+echo '{"skill":"spec","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","repo":"'$(basename "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || echo "unknown")'"}'  >> ~/.gstack/analytics/skill-usage.jsonl 2>/dev/null || true
 fi
 for _PF in $(find ~/.gstack/analytics -maxdepth 1 -name '.pending-*' 2>/dev/null); do
   if [ -f "$_PF" ]; then
@@ -83,7 +87,7 @@ if [ -f "$_LEARN_FILE" ]; then
 else
   echo "LEARNINGS: 0"
 fi
-~/.claude/skills/gstack/bin/gstack-timeline-log '{"skill":"issue","event":"started","branch":"'"$_BRANCH"'","session":"'"$_SESSION_ID"'"}' 2>/dev/null &
+~/.claude/skills/gstack/bin/gstack-timeline-log '{"skill":"spec","event":"started","branch":"'"$_BRANCH"'","session":"'"$_SESSION_ID"'"}' 2>/dev/null &
 _HAS_ROUTING="no"
 if [ -f CLAUDE.md ] && grep -q "## Skill routing" CLAUDE.md 2>/dev/null; then
   _HAS_ROUTING="yes"
@@ -679,7 +683,7 @@ Before each AskUserQuestion, choose `question_id` from `scripts/question-registr
 
 After answer, log best-effort:
 ```bash
-~/.claude/skills/gstack/bin/gstack-question-log '{"skill":"issue","question_id":"<id>","question_summary":"<short>","category":"<approval|clarification|routing|cherry-pick|feedback-loop>","door_type":"<one-way|two-way>","options_count":N,"user_choice":"<key>","recommended":"<key>","session_id":"'"$_SESSION_ID"'"}' 2>/dev/null || true
+~/.claude/skills/gstack/bin/gstack-question-log '{"skill":"spec","question_id":"<id>","question_summary":"<short>","category":"<approval|clarification|routing|cherry-pick|feedback-loop>","door_type":"<one-way|two-way>","options_count":N,"user_choice":"<key>","recommended":"<key>","session_id":"'"$_SESSION_ID"'"}' 2>/dev/null || true
 ```
 
 For two-way questions, offer: "Tune this question? Reply `tune: never-ask`, `tune: always-ask`, or free-form."
@@ -764,13 +768,12 @@ Replace `SKILL_NAME`, `OUTCOME`, and `USED_BROWSE` before running.
 
 Skills that run plan reviews (`/plan-*-review`, `/codex review`) include the EXIT PLAN MODE GATE blocking checklist at the end of the skill, which verifies the plan file ends with `## GSTACK REVIEW REPORT` before ExitPlanMode is called. Skills that don't run plan reviews (operational skills like `/ship`, `/qa`, `/review`) typically don't operate in plan mode and have no review report to verify; this footer is a no-op for them. Writing the plan file is the one edit allowed in plan mode.
 
-# /issue — Author a Backlog-Ready GitHub Issue
+# /spec — Author a Backlog-Ready Spec (issue + optional agent spawn)
 
 You are a **principal engineer who refuses to let ambiguous work into the backlog**.
 Your job is to interrogate the user's request — round by round — until you could
-mass-produce the solution. Then produce a GitHub issue so precise that someone
-unfamiliar with the codebase (or an AI agent) can execute it without a single
-follow-up question.
+mass-produce the solution. Then produce a spec so precise that someone unfamiliar
+with the codebase (or an AI agent) can execute it without a single follow-up question.
 
 You are friendly but relentless. Ambiguity is a bug and you will find it. You push
 back on scope creep ("That's a separate issue — let's finish this one") and
@@ -781,14 +784,9 @@ if you don't know something about the codebase, say so and ask, or go read the
 code. You quantify everything. "Several files" is not acceptable — find the exact
 count. "Improves performance" is not acceptable — state the metric and target.
 
-```bash
-mkdir -p ~/.gstack/analytics
-echo '{"skill":"issue","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","repo":"'$(basename "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || echo "unknown")'"}'  >> ~/.gstack/analytics/skill-usage.jsonl 2>/dev/null || true
-```
-
 **HARD GATE:** Do NOT produce an issue after the first message. Always start with
-Phase 1. Do NOT propose implementation. Your only output is a GitHub issue (and
-optionally the `gh issue create` call that files it).
+Phase 1. Do NOT propose implementation. Your only output is a spec — filed as a
+GitHub issue, archived locally, and optionally piped to a spawned agent.
 
 The user's first message after this prompt is their initial request. Begin Phase 1
 immediately — do NOT ask them to repeat themselves.
@@ -1131,10 +1129,10 @@ Add to the standard template:
 
 ## Handoff
 
-- **Before `/issue`:** if the user is still exploring whether to build something,
-  route them to `/office-hours` first. `/issue` is for work that has already
+- **Before `/spec`:** if the user is still exploring whether to build something,
+  route them to `/office-hours` first. `/spec` is for work that has already
   passed the "is this worth building" bar.
-- **After `/issue`:** if the issue describes architectural or design risk that
+- **After `/spec`:** if the spec describes architectural or design risk that
   needs review before implementation starts, suggest `/plan-eng-review` (or
   `/autoplan` for the full review gauntlet).
 - **For implementation:** the issue itself is the handoff. The implementer can
