@@ -2,46 +2,82 @@
 
 ## [1.49.0.0] - 2026-05-26
 
-## **Contributor opt-in for /plan-tune behavioral logging, plus a first-run setup wizard that catches users who set `question_tuning: true` directly.**
+## **`/plan-tune` learns to ask for consent before logging, and runs the 5-question setup automatically when your profile is empty.**
 
-Running `/plan-tune` now does the right thing the first time, every time. New contributors see an explicit consent prompt with contributor-specific framing ("logging stays local, helps v2 calibration data accumulate") before any AskUserQuestion outcome gets logged. Anyone who set `question_tuning: true` via `gstack-config` without running the wizard hits the new setup gate on their next invocation — the 5-question declared-profile wizard runs once, then never again. Both flows use marker files (`~/.gstack/.question-tuning-prompted`, `~/.gstack/.declared-setup-prompted`) so the user is asked at most once.
+Run `/plan-tune` the first time and you get an opt-in prompt. Accept and the 5-question wizard fills in your declared profile in about two minutes. Decline and `/plan-tune` never asks again. Contributors see a slightly different prompt explaining that local question-log data helps gstack calibrate, but the default is the same: off until you say yes.
 
-The branch took a hard turn during /plan-eng-review. The original Phase A approach auto-flipped the `question_tuning` default for contributors via `bin/gstack-config`. Codex's outside voice pushed back on two grounds: notice-after-enablement isn't consent, and reusing `gstack_contributor` (documented as "file field reports") for fine-grained behavioral logging is semantic drift. The auto-flip was reverted; the substance moved entirely into `plan-tune/SKILL.md.tmpl` as an explicit consent surface. Codex's outside voice also surfaced a calibration-gate inconsistency across three docs — `docs/designs/PLAN_TUNING_V0.md` said "90+ days stable" for E1 promotion, the TODOS.md E1 card said "2+ weeks", and the binary's display gate uses 7 days / 20 samples. The fix distinguishes the two: the 7-day gate is for "show me my inferred profile" (display affordance), the 90-day gate is for "ship behavior-adapting defaults" (E1 promotion). TODOS.md updated, both gates documented inline.
+If you already opted in via `gstack-config set question_tuning true` and skipped the wizard, the next `/plan-tune` runs just the 5-question setup so your profile actually has values.
 
-### What changed
-
-| File | Why |
-|------|-----|
-| `plan-tune/SKILL.md.tmpl` | Step 0 grows two implicit gates that run before user-intent routing — consent gate (asks once per contributor) + setup gate (catches `question_tuning: true` with empty declared). Existing Enable+setup section split into "Consent + opt-in" (with contributor-specific copy) and standalone "5-Q setup" reachable from both paths. Display-vs-promotion gate distinction added inline so future readers don't confuse the 7-day diversity gate with the 90-day E1 acceptance gate. |
-| `plan-tune/SKILL.md` | Regenerated from the patched template. |
-| `TODOS.md` | E1 card's "Depends on" line corrected from "2+ weeks" to "90+ days stable across 3+ skills" (matches `PLAN_TUNING_V0.md`). Added Codex's E1 substrate risk note: generated skill prose is agent-compliance-based, so E1 adaptations ship as advisory annotations on AskUserQuestion recommendations until there's a hard runtime execution path. Do NOT gate AUTO_DECIDE on inferred profile alone. |
-
-### What did NOT ship (and why)
-
-- **Auto-flip of `question_tuning` for contributors.** Codex's outside voice argued the privacy posture should match the rest of the codebase (telemetry off-by-default with stop-gate, artifacts off-by-default with stop-gate). The consent surface in `/plan-tune` Step 0 is the right place to ask. Slower calibration data ramp, coherent posture.
-- **Broader-user calibration weighting.** Contributors are the cohort most willing to opt in but also the cohort least representative of broader gstack users. v2 E1 signal-map design will need to address bias — either by widening the cohort, weighting non-contributor explicit opt-ins more heavily, or shipping contributor-only "advisory mode" that doesn't change defaults for users who haven't opted in. Out of scope for this PR.
-- **Real YAML parser for `gstack-config`.** The codebase uses grep+awk YAML parsing throughout. Since this PR no longer reads YAML conditionally, the broader fragility (comments, quoted booleans, duplicate keys, CRLF) is back to pre-existing scope. Separate refactor PR if ever needed.
-
-### What this means for you
-
-If you're a gstack contributor and you set `gstack_contributor: true` previously: nothing changes by default. Your next `/plan-tune` invocation will offer the opt-in. Accept and you get the consent + 5-Q setup flow in ~2 minutes; decline and you're never asked again. If you've already opted in via `gstack-config set question_tuning true` but skipped the wizard (likely if you set it manually), your next `/plan-tune` will run just the 5-Q setup so your declared profile is populated.
-
-If you're a v2 work planner: E1's "skills consume profile and adapt defaults" promotion gate is now consistently 90+ days stable across 3+ skills. Don't start E1 work based on the lower 7-day display gate — that's just for showing the inferred column in `/plan-tune` output. Substrate risk note in TODOS.md spells out the agent-compliance constraint: E1 adaptations should ship as advisory annotations, not silent AUTO_DECIDE behavior.
+Both flows write marker files in `~/.gstack/` so you're asked at most once per choice.
 
 ### Itemized changes
 
 **Added**
-- `plan-tune/SKILL.md.tmpl`: "Consent + opt-in" section with contributor-specific framing variant. Runs only if `question_tuning` is false AND `~/.gstack/.question-tuning-prompted` is missing. Marker write is unconditional after the prompt — never re-asks regardless of answer.
-- `plan-tune/SKILL.md.tmpl`: Step 0 implicit gates — "Consent gate" (offers opt-in) + "Setup gate" (runs 5-Q wizard when `question_tuning=true` AND declared is empty AND no `.declared-setup-prompted` marker). Gate phrasing uses Codex's cleaner formulation.
-- `plan-tune/SKILL.md.tmpl`: Inline distinction between the display gate (`sample_size >= 20 AND skills_covered >= 3 AND question_ids_covered >= 8 AND days_span >= 7`) and the E1 promotion gate (90+ days stable across 3+ skills). Display gate is for rendering inferred values; promotion gate is for shipping behavior adaptation.
+- `/plan-tune` consent prompt with contributor-specific copy. Honored by `~/.gstack/.question-tuning-prompted` marker.
+- `/plan-tune` setup gate. Catches `question_tuning: true` with empty `declared`. Honored by `~/.gstack/.declared-setup-prompted` marker.
 
 **Changed**
-- `TODOS.md` E1 card: "Depends on" line aligned with `docs/designs/PLAN_TUNING_V0.md` §"Deferred to v2" — "90+ days of v1 dogfood stable across 3+ skills" (was "2+ weeks").
-- `TODOS.md` E1 card: Added substrate risk note from Codex outside-voice. E1 adaptations ship as advisory annotations on AskUserQuestion recommendations, not as runtime-enforced AUTO_DECIDE behavior. Tests can verify generated templates contain the right reads of `~/.gstack/developer-profile.json` but cannot prove agents obey them at runtime.
+- `TODOS.md` E1 dependency line aligned with the canonical 90-day gate in `docs/designs/PLAN_TUNING_V0.md`. The 7-day diversity gate is for displaying inferred values in `/plan-tune` output; the 90-day gate is for shipping behavior adaptation. Both gates documented inline in `plan-tune/SKILL.md.tmpl`.
+- `TODOS.md` E1 substrate constraint: E1 adaptations land as advisory annotations on AskUserQuestion recommendations, not as runtime AUTO_DECIDE on inferred profile alone.
 
 **For contributors**
-- Plan file: `/Users/garrytan/.claude/plans/hm-ok-well-can-imperative-unicorn.md` captures the full /plan-eng-review + Codex outside-voice exchange and decision rationale.
-- Size-budget override: `plan-tune/SKILL.md` grew from 50,123 to 52,963 bytes (×1.06), crossing the v1.44.1 baseline ratio of 1.05. Documented override reason logged to audit trail.
+- `plan-tune/SKILL.md` size budget override (50,123 → 52,963 bytes, ×1.06 vs v1.44.1 baseline). Reason logged to audit trail.
+
+## [1.47.0.0] - 2026-05-26
+
+## **`/spec` ships: turn vague intent into a precise, executable spec in five phases.** Pipe the spec into a spawned Claude Code agent, dedupe against existing issues, archive locally for the team corpus, and let `/ship` close the source issue on merge.
+
+A precise spec collapses an agent's clarification roundtrips from N to zero. `/spec` is the verb that turns thoughts into commits: five strict phases (why, scope, technical with mandatory code-reading, draft, file), a codex quality gate before file, archive to `$GSTACK_STATE_ROOT/projects/$SLUG/specs/`, and optional pipeline-mode spawn into a fresh worktree. Plan-mode aware: in plan mode `/spec` files the issue and loads the spec into your active plan file; in execution mode it files the issue and spawns `claude -p` in a fresh worktree by default. `/ship` reads the archive frontmatter and auto-closes the source issue on full delivery. Adapted from a community-contributed `/issue` skill (PR #1698 by @jayzalowitz) with rename, race+security hardening, and DX polish.
+
+`/spec` is the first skill registered against the v1.46 eval-first floor (`test/skill-coverage-matrix.ts`), passing all six structural floor checks plus 37 deterministic invariant assertions specific to `/spec`'s contract. Skill catalog count: 51 → 52.
+
+### The numbers that matter
+
+Source: 1 contributor commit + 8 follow-on bundled fixes/expansions on this branch (`git log v1.46.0.0..HEAD --oneline`). Template at `spec/SKILL.md.tmpl` (404 → ~750 lines after expansions), 4 new test files (37 deterministic scenarios + 2 periodic-tier stubs).
+
+| Capability | Without `/spec` | With `/spec` |
+|---|---|---|
+| Author backlog-ready issue | freehand prose, sloppy AC, no file refs, 10-15 min per issue | 5-phase interrogation with hard-grep Phase 3, file-refs at `path:line`, quantified impact, ~4 min |
+| Spec → agent execution | copy-paste into new `claude -p` session, ~30s context-switch friction | `--execute` spawns automatically in fresh worktree `spec/<slug>-$$`, zero hand-off |
+| Catch ambiguity before file | none (you find out when the implementer asks) | codex quality gate scores 0-10, blocks below 7, lists ambiguities, up to 3 iterations |
+| Secret leakage to second-AI judge | possible if spec contains pasted secret | fail-closed redaction blocks dispatch on AWS/GitHub/Anthropic key patterns + private key blocks |
+| Concurrent `/spec` runs | branch/archive collisions on same second | unique `spec/<slug>-$$` branches, atomic `.tmp/mv` archive write, PID-suffixed filenames |
+| Linked issue closure | manual `Closes #N` in PR body | `/ship` auto-adds when archive present AND full spec delivered |
+
+### What this means for builders
+
+Type `/spec` on a vague bug; four minutes later you have a filed GitHub issue with file refs and a Claude Code agent already executing it in a fresh worktree. When `/ship` lands the PR, the source issue auto-closes. The corpus of past specs in `$GSTACK_STATE_ROOT/projects/$SLUG/specs/` is mineable by `gbrain` for cross-session pattern recall. `--no-gate`, `--no-execute`, `--file-only`, and `--plan-file <path>` are escape hatches when the defaults don't fit; `--audit` routes to the Audit/Cleanup template structure.
+
+### Itemized changes
+
+#### Added
+- `/spec` skill (renamed from contributor's `/issue`): five-phase interrogation producing backlog-ready specs. Lives at `spec/SKILL.md.tmpl`.
+- `--dedupe` flag (default ON): `gh issue list --search` before drafting, surfaces near-duplicates via AskUserQuestion; graceful skip on `gh` missing/unauthed/rate-limited.
+- `--execute` flag (default ON in execution mode): spawns `claude -p` in a fresh Conductor worktree on branch `spec/<slug>-$$`, with dirty-worktree gate, TOCTOU re-check after AskUserQuestion answer, SHA pin via `git rev-parse HEAD`, and mandatory final-confirm gate.
+- Quality-score gate (default ON): codex adversarial dispatch with hard `<<<USER_SPEC>>>` delimiter + instruction boundary, score 0-10, blocks at <7, up to 3 iterations, AskUserQuestion escape on persistent <7 (ship anyway / save draft / one more try).
+- Fail-closed redaction in quality gate: regex match against AWS access keys (`AKIA...`), GitHub tokens (`ghp_/gho_/ghs_`), Anthropic keys (`sk-ant-...`), OpenAI keys, `.env`-style `KEY=value`, and `-----BEGIN ... PRIVATE KEY-----` blocks → block dispatch entirely. Raw spec never persisted to archive or transcript on block.
+- `--audit` flag routes Phase 5 to the Audit/Cleanup template structure.
+- `--file-only` / `--no-execute` / `--plan-file <path>` overrides for plan-mode-aware Phase 5 default.
+- `--sync-archive` opt-in for cross-machine spec sync (archives stay local by default; `/specs/` excluded from artifacts-sync allowlist).
+- Spec archive: writes to `$GSTACK_STATE_ROOT/projects/$SLUG/specs/<datetime>-<pid>-<slug>.md` via existing `gstack-paths` resolver (handles `GSTACK_HOME`, `CLAUDE_PLUGIN_DATA`, Windows fallback). Atomic `.tmp/mv` write prevents collision on concurrent runs.
+- `GSTACK_PLAN_MODE` env var: emitted by `{{PREAMBLE}}` based on `CLAUDE_PLAN_FILE` presence. Skills can branch behavior on plan-mode state without parsing system reminders.
+- `/spec` entry in the gstack routing block injected into project CLAUDE.md.
+- `/ship` PR body integration: reads `spec_issue_number` from archive frontmatter and adds `Closes #N` when the spec is fully delivered per the existing plan-completion gate. Partial delivery emits a "Linked to #N (not auto-closing)" notice instead.
+- `/spec` entry in `test/skill-coverage-matrix.ts` (52nd skill, eval-first floor compliance per v1.46 contract).
+
+#### Tests
+- `test/spec-template-invariants.test.ts`: 35 deterministic invariants covering Phase 1 hard gate, Phase 3 hard-grep mandate, `--dedupe` graceful-skip paths, `--execute` race + security hardening (TOCTOU re-check, SHA pin, unique branch), quality-gate redaction patterns and BLOCKED path, archive atomic write + sync exclusion, plan-mode-aware Phase 5 dispatch.
+- `test/spec-template-sync.test.ts`: regenerates `spec/SKILL.md` and asserts byte-identical output (prevents template-vs-generated drift).
+- `test/skill-e2e-spec-execute.test.ts` (periodic-tier): full `/spec --execute` pipeline scaffold registered in `E2E_TIERS`.
+- `test/skill-llm-eval-spec.test.ts` (periodic-tier): authored-spec quality eval against the 14-Quality-Standards rubric.
+
+#### Fixed
+- Duplicate analytics block in `spec/SKILL.md.tmpl` (was bypassing the `_TEL != "off"` opt-out gate; `{{PREAMBLE}}` already emits the analytics write with the guard).
+
+#### For contributors
+- Community contribution: PR #1698 by @jayzalowitz (Jay Zalowitz) lands as the foundation commit with original authorship preserved. Contributor's 5 phases, 14 Quality Standards, and Standard/Epic/Audit templates carried forward intact; expansions are additive.
+- Plan reviewed across `/plan-ceo-review` (SCOPE EXPANSION, 5 of 6 expansions accepted), `/plan-eng-review` (race + security hardening), and `/plan-devex-review` (persona, magical moment, error-message Tier 1, plan-mode-aware Phase 5).
+- 28 codex adversarial findings across 3 review rounds, 23 accepted.
 
 ## [1.46.0.0] - 2026-05-26
 
