@@ -22,12 +22,14 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, statSync, unlinkSync, readdirSync, openSync, closeSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir, hostname } from 'os';
+import { spawnSync } from 'child_process';
 import { execGbrainJson, spawnGbrain } from '../lib/gbrain-exec';
 import {
   BRAIN_CACHE_ENTITIES,
   CACHE_REFRESH_LOCK_TIMEOUT_MS,
   GSTACK_SCHEMA_PACK_NAME,
   GSTACK_SCHEMA_PACK_VERSION,
+  SALIENCE_DEFAULT_ALLOWLIST,
   type BrainCacheEntity,
 } from '../scripts/brain-cache-spec';
 
@@ -509,6 +511,47 @@ function fetchRecentDecisions(projectSlug: string | null): string | null {
   return `# Recent decisions (project: ${projectSlug})\n\n${lines.join('\n')}\n`;
 }
 
+/**
+ * Reads the user's salience allowlist override from gstack-config. If unset,
+ * returns SALIENCE_DEFAULT_ALLOWLIST. The override is comma-separated; we
+ * trim and drop empty entries.
+ */
+export function getSalienceAllowlist(): ReadonlyArray<string> {
+  // Short-circuit via env var for tests + headless callers.
+  const env = process.env.GSTACK_SALIENCE_ALLOWLIST;
+  if (typeof env === 'string' && env.length > 0) {
+    return env.split(',').map((s) => s.trim()).filter(Boolean);
+  }
+  // Shell out to gstack-config with a tight timeout. Falls back to defaults
+  // on any failure (config script missing, command non-zero, parse error).
+  try {
+    const skillRoot = join(homedir(), '.claude', 'skills', 'gstack');
+    const bin = join(skillRoot, 'bin', 'gstack-config');
+    if (!existsSync(bin)) return SALIENCE_DEFAULT_ALLOWLIST;
+    const result = spawnSync(bin, ['get', 'salience_allowlist'], { timeout: 2000, encoding: 'utf-8' });
+    if (result.status !== 0 || !result.stdout) return SALIENCE_DEFAULT_ALLOWLIST;
+    const trimmed = result.stdout.trim();
+    if (!trimmed) return SALIENCE_DEFAULT_ALLOWLIST;
+    const parts = trimmed.split(',').map((s) => s.trim()).filter(Boolean);
+    return parts.length > 0 ? parts : SALIENCE_DEFAULT_ALLOWLIST;
+  } catch {
+    return SALIENCE_DEFAULT_ALLOWLIST;
+  }
+}
+
+/**
+ * D9 salience privacy gate: returns true if the slug starts with any allowlisted
+ * prefix. Anything NOT matching is stripped at digest write time so that family,
+ * therapy, reflection, and other sensitive content never leaks into work-flow
+ * planning prompts by default.
+ */
+export function isSalienceSlugAllowed(slug: string, allowlist: ReadonlyArray<string>): boolean {
+  for (const prefix of allowlist) {
+    if (slug.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
 function fetchSalience(projectSlug: string | null): string | null {
   // get-recent-salience is a gbrain CLI sub-shape; we use the MCP-shape JSON
   const result = execGbrainJson<{ pages?: Array<{ slug: string; title?: string; emotional_weight?: number }> }>([
@@ -518,9 +561,25 @@ function fetchSalience(projectSlug: string | null): string | null {
     '--json',
   ]);
   if (!result?.pages) return `# Recent salience\n\n_No salient pages in last 14d._\n`;
-  // T17 will add allowlist filtering here. For T2a we return raw output.
-  const lines = result.pages.map((p) => `- [[${p.slug}]] — ${p.title || ''} (weight: ${p.emotional_weight?.toFixed(2) ?? 'n/a'})`);
-  return `# Recent salience (last 14d)\n\n${lines.join('\n')}\n`;
+
+  // D9 privacy gate: strip entries outside the allowlist BEFORE rendering.
+  // Sensitive personal content (family, therapy, reflection) is never written
+  // into the digest cache file, even when the brain itself ranks it salient.
+  const allowlist = getSalienceAllowlist();
+  const filtered = result.pages.filter((p) => p.slug && isSalienceSlugAllowed(p.slug, allowlist));
+  const stripped = result.pages.length - filtered.length;
+  if (filtered.length === 0) {
+    const header = `# Recent salience (last 14d)`;
+    const note = stripped > 0
+      ? `\n_All ${stripped} salient entries stripped by allowlist gate (no work-flow content in window)._\n`
+      : `\n_No salient pages in last 14d._\n`;
+    return `${header}\n${note}`;
+  }
+  const lines = filtered.map((p) => `- [[${p.slug}]] — ${p.title || ''} (weight: ${p.emotional_weight?.toFixed(2) ?? 'n/a'})`);
+  const footer = stripped > 0
+    ? `\n\n_${stripped} private entries stripped by allowlist gate._`
+    : '';
+  return `# Recent salience (last 14d)\n\n${lines.join('\n')}${footer}\n`;
 }
 
 /**
