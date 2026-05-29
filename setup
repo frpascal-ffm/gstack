@@ -296,19 +296,21 @@ ensure_emoji_font() {
     sudo="sudo -n"
   fi
 
+  # Every package-manager call is wrapped in `timeout` so a stuck dpkg/rpm lock
+  # or a wedged mirror fails fast into the warn path instead of hanging setup.
   if command -v apt-get >/dev/null 2>&1; then
     echo "Installing color-emoji font (fonts-noto-color-emoji) so make-pdf emoji render (set GSTACK_SKIP_FONTS=1 to skip)..."
     DEBIAN_FRONTEND=noninteractive timeout 30 $sudo apt-get update -qq >/dev/null 2>&1 || true
-    DEBIAN_FRONTEND=noninteractive $sudo apt-get install -y -qq fonts-noto-color-emoji >/dev/null 2>&1 || return 1
+    DEBIAN_FRONTEND=noninteractive timeout 120 $sudo apt-get install -y -qq fonts-noto-color-emoji >/dev/null 2>&1 || return 1
   elif command -v dnf >/dev/null 2>&1; then
     echo "Installing color-emoji font (google-noto-color-emoji-fonts)..."
-    $sudo dnf install -y google-noto-color-emoji-fonts >/dev/null 2>&1 || return 1
+    timeout 120 $sudo dnf install -y google-noto-color-emoji-fonts >/dev/null 2>&1 || return 1
   elif command -v pacman >/dev/null 2>&1; then
     echo "Installing color-emoji font (noto-fonts-emoji)..."
-    $sudo pacman -Sy --noconfirm noto-fonts-emoji >/dev/null 2>&1 || return 1
+    timeout 120 $sudo pacman -Sy --noconfirm noto-fonts-emoji >/dev/null 2>&1 || return 1
   elif command -v apk >/dev/null 2>&1; then
     echo "Installing color-emoji font (font-noto-emoji)..."
-    $sudo apk add --no-cache font-noto-emoji >/dev/null 2>&1 || return 1
+    timeout 120 $sudo apk add --no-cache font-noto-emoji >/dev/null 2>&1 || return 1
   else
     return 1
   fi

@@ -52,6 +52,12 @@ describe('setup: ensure_emoji_font static invariants', () => {
   test('install path is non-interactive and timeout-guarded', () => {
     expect(helper).toContain('DEBIAN_FRONTEND=noninteractive');
     expect(helper).toMatch(/timeout 30 .*apt-get update/);
+    // Every package-manager INSTALL (not just apt update) must be timeout-bound
+    // so a stuck lock/mirror fails fast instead of hanging setup.
+    expect(helper).toMatch(/timeout \d+ .*apt-get install/);
+    expect(helper).toMatch(/timeout \d+ .*dnf install/);
+    expect(helper).toMatch(/timeout \d+ .*pacman -Sy/);
+    expect(helper).toMatch(/timeout \d+ .*apk add/);
   });
 
   test('covers all four package managers with the correct package names', () => {
