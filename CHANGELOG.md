@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.50.0.0] - 2026-05-27
+## [1.51.1.0] - 2026-05-27
 
 ## **Brain-aware planning lands. Five planning skills read structured context from any personal gbrain before asking — same questions, smarter answers, no token tax.**
 
