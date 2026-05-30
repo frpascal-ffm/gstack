@@ -37,7 +37,7 @@ import { createHash } from "crypto";
 
 import "../lib/conductor-env-shim";
 import { detectEngineTier, withErrorContext, canonicalizeRemote } from "../lib/gstack-memory-helpers";
-import { ensureSourceRegistered, sourcePageCount } from "../lib/gbrain-sources";
+import { ensureSourceRegistered, sourcePageCount, parseSourcesList } from "../lib/gbrain-sources";
 import { localEngineStatus, type LocalEngineStatus } from "../lib/gbrain-local-status";
 import { buildGbrainEnv, spawnGbrain, execGbrainJson } from "../lib/gbrain-exec";
 
@@ -407,10 +407,7 @@ export function sourceLocalPath(sourceId: string, env?: NodeJS.ProcessEnv): stri
     { baseEnv: env },
   );
   if (!raw) return null;
-  const list: Array<{ id?: string; local_path?: string }> = Array.isArray(raw)
-    ? (raw as Array<{ id?: string; local_path?: string }>)
-    : ((raw as { sources?: Array<{ id?: string; local_path?: string }> }).sources ?? []);
-  const found = list.find((s) => s.id === sourceId);
+  const found = parseSourcesList(raw).find((s) => s.id === sourceId);
   return found?.local_path ?? null;
 }
 

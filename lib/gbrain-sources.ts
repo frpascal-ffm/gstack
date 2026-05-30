@@ -26,6 +26,37 @@ export interface EnsureResult {
   state: SourceState;
 }
 
+/**
+ * One row of `gbrain sources list --json`. `config.remote_url` distinguishes
+ * URL-managed sources (gbrain owns the clone, may auto-reclone) from
+ * path-managed ones (user owns the working tree) — load-bearing for the #1734
+ * destructive-op guards.
+ */
+export interface GbrainSourceRow {
+  id?: string;
+  local_path?: string;
+  page_count?: number;
+  config?: { remote_url?: string | null } | null;
+}
+
+/**
+ * Normalize `gbrain sources list --json` output to an array of source rows.
+ *
+ * gbrain has shipped two shapes: a wrapped `{ sources: [...] }` object (v0.20+)
+ * and, in older/other variants, a bare top-level array. #1576 was a crash when a
+ * reader assumed one shape; the parse is centralized here so every reader
+ * (probeSource, sourcePageCount, sourceLocalPath, the #1734 remote_url audit)
+ * agrees on the shape in ONE place. Returns [] for null/garbage rather than
+ * throwing — callers treat "no rows" as absent.
+ */
+export function parseSourcesList(raw: unknown): GbrainSourceRow[] {
+  if (Array.isArray(raw)) return raw as GbrainSourceRow[];
+  if (raw && typeof raw === "object" && Array.isArray((raw as { sources?: unknown }).sources)) {
+    return (raw as { sources: GbrainSourceRow[] }).sources;
+  }
+  return [];
+}
+
 export interface EnsureOptions {
   /** Pass --federated to `gbrain sources add`. Default false. */
   federated?: boolean;
@@ -69,14 +100,14 @@ export function probeSource(id: string, env?: NodeJS.ProcessEnv): SourceState {
     throw err;
   }
 
-  let parsed: { sources?: Array<{ id?: string; local_path?: string }> };
+  let parsed: unknown;
   try {
     parsed = JSON.parse(stdout);
   } catch (err) {
     throw new Error(`gbrain sources list returned non-JSON output: ${(err as Error).message}`);
   }
 
-  const sources = parsed.sources || [];
+  const sources = parseSourcesList(parsed);
   const match = sources.find((s) => s.id === id);
   if (!match) return { status: "absent" };
   return {
@@ -173,8 +204,7 @@ export function sourcePageCount(id: string, env?: NodeJS.ProcessEnv): number | n
   }
 
   try {
-    const parsed = JSON.parse(stdout) as { sources?: Array<{ id?: string; page_count?: number }> };
-    const match = (parsed.sources || []).find((s) => s.id === id);
+    const match = parseSourcesList(JSON.parse(stdout)).find((s) => s.id === id);
     if (!match) return null;
     if (typeof match.page_count !== "number") return null;
     return match.page_count;
