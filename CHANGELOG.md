@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.58.0.0] - 2026-06-01
+
+## **Every skill that asks you questions got a little lighter, all at once — the AskUserQuestion preamble stopped carrying its rare-case manuals inline.**
+
+The AskUserQuestion format block is inlined into every interactive skill (~33 of them). It carried the full multi-paragraph CJK / non-ASCII escaping manual inline, even though that rule only matters when a question contains Chinese, Japanese, or Korean text. The operative rule ("write non-ASCII characters literally, never `\u`-escape") already lives in the always-loaded self-check, so the long justification moved to `docs/askuserquestion-cjk.md`, read on demand. One change, every skill benefits. This is the preamble half of the token-reduction program: per-skill carves shrink one skill at a time, this shrinks the shared surface that rides on all of them.
+
+### The numbers that matter
+
+Measured across the Claude-host corpus (`cat SKILL.md */SKILL.md | wc -c`), regenerated for all hosts:
+
+| Metric | Before (v1.57) | After (v1.58) | Δ |
+|--------|----------------|---------------|---|
+| Claude-host skill corpus | 3,087,499 B | 3,057,975 B | -29,524 B |
+| per interactive skill | full CJK manual inline | rule + 1 doc pointer | ~900 B each × ~33 |
+| AUQ core format (Layer 0) | always-loaded | always-loaded (unchanged) | guaranteed |
+
+The core decision-brief format (ELI10, recommendation, pros/cons, stakes, self-check) is untouched and still always-loaded — Layer 0 enforces it. Only the rarely-needed CJK rationale moved on-demand.
+
+### What this means for you
+
+Nothing changes in how questions look or behave. For the rare CJK question, the agent reads one small doc for the full rationale; the operative rule was never removed. Every interactive skill is ~900 bytes lighter at the always-loaded layer.
+
+### Itemized changes
+
+#### Added
+- `docs/askuserquestion-cjk.md` — full non-ASCII / CJK escaping rationale + worked example, read on demand.
+
+#### Changed
+- The AskUserQuestion preamble block trims the inline CJK manual to the operative rule + a doc pointer; the self-check reminder stays always-loaded.
+
 ## [1.57.0.0] - 2026-06-01
 
 ## **/office-hours got 25% lighter, and there is now a test that proves slimming a skill never degrades the questions it asks you.**
