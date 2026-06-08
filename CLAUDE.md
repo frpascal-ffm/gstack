@@ -913,6 +913,8 @@ enhancement layered on top, never a dependency.)
 
 - **Resurface** active decisions before re-deciding: `bin/gstack-decision-search`
   (`--recent N`, `--scope repo|branch|issue`, `--query KW`, `--all`, `--json`).
+  Add `--semantic` (with `--query`) to append related hits from gbrain memory when
+  it's up; it degrades silently to the reliable file results when gbrain is off.
   Session start already surfaces scope-relevant active decisions via Context Recovery.
   If a decision is listed, treat it as settled with its rationale; if you're about to
   reverse it, say so explicitly.

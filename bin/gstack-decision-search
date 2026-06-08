@@ -5,11 +5,17 @@
  * Usage:
  *   gstack-decision-search [--query KW] [--scope repo|branch|issue]
  *                          [--branch B] [--issue I] [--recent N] [--all] [--json]
+ *                          [--semantic]
  *
  * Reads the BOUNDED active snapshot (decisions.active.json) — O(active), not a full
  * history scan — and rebuilds it from the event log if missing. Scope-filtered to the
  * current branch/issue context (recency != relevance). NON-INTERACTIVE. `--all` shows
  * superseded decisions too (from the full log). Exit 0 silently when there are none.
+ *
+ * `--semantic` (with `--query`) appends an OPTIONAL "related from memory" block from
+ * gbrain semantic recall. It is a pure enhancement: when gbrain is off/unconfigured/
+ * empty it degrades silently to the reliable file results above. The reliable path
+ * never loads gbrain code (the semantic module is imported lazily only here).
  */
 
 import { existsSync } from "fs";
@@ -43,13 +49,15 @@ function flagValue(name: string): string | undefined {
 
 const slug = resolveSlug();
 const paths = decisionPaths(slug);
-const query = flagValue("--query")?.toLowerCase();
+const queryRaw = flagValue("--query");
+const query = queryRaw?.toLowerCase();
 const scope = flagValue("--scope");
 const branch = flagValue("--branch") ?? gitBranch();
 const issue = flagValue("--issue");
 const recent = flagValue("--recent") ? parseInt(flagValue("--recent") as string, 10) : undefined;
 const showAll = args.includes("--all");
 const asJson = args.includes("--json");
+const semantic = args.includes("--semantic");
 
 let rows: ActiveDecision[];
 if (showAll) {
@@ -75,13 +83,28 @@ rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)); // newest
 if (recent && recent > 0) rows = rows.slice(0, recent);
 
 if (asJson) {
+  // --json stays reliable-only (semantic recall is a human-facing supplement).
   console.log(JSON.stringify(rows));
   process.exit(0);
 }
-if (!rows.length) process.exit(0); // silent when nothing relevant
 
 for (const d of rows) {
   const scopeTag = d.scope === "repo" ? "" : ` [${d.scope}${d.branch ? `:${d.branch}` : ""}${d.issue ? `:${d.issue}` : ""}]`;
   console.log(`- ${d.decision}${scopeTag} (${d.source}, ${d.date.slice(0, 10)})`);
   if (d.rationale) console.log(`  why: ${d.rationale}`);
+}
+
+// OPTIONAL gbrain enhancement. Lazy import so the reliable path above never loads
+// gbrain code. Degrades silently: null (gbrain off) or [] (nothing found) leaves the
+// reliable results above as the answer.
+if (semantic && queryRaw) {
+  const { semanticRecall } = await import("../lib/gstack-decision-semantic");
+  const hits = semanticRecall(queryRaw);
+  if (hits && hits.length) {
+    console.log("\nRelated from memory (gbrain semantic recall):");
+    for (const h of hits) {
+      const snip = h.snippet.length > 100 ? `${h.snippet.slice(0, 100)}…` : h.snippet;
+      console.log(`  [${h.score.toFixed(2)}] ${h.slug}: ${snip}`);
+    }
+  }
 }
