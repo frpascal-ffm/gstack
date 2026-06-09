@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.59.1.0] - 2026-06-09
+## [1.57.8.0] - 2026-06-09
 
 ## **`browse` is now the one Chromium on the box, for offline rendering too.**
 ## **`js`/`eval --out <file>` writes a render straight to disk, so skills stop bundling their own puppeteer.**
